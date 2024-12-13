@@ -5,6 +5,27 @@
 #include <cstring>
 #include <arpa/inet.h>  // For inet_ntoa()
 
+
+
+void parseRequest(char* buffer) {
+    // Split the request line (first line of the HTTP request)
+    char* method = strtok(buffer, " ");  // e.g., "GET"
+    char* path = strtok(NULL, " ");      // e.g., "/"
+    char* version = strtok(NULL, "\r\n");  // e.g., "HTTP/1.1"
+
+    if (!method || !path || !version) {
+    std::cerr << "Malformed request" << std::endl;
+    return;
+    }
+
+    // Print the parsed values
+    std::cout << "Method: " << method << std::endl;
+    std::cout << "Path: " << path << std::endl;
+    std::cout << "Version: " << version << std::endl;
+}
+
+
+
 int main() {
 
     // defining the port number
@@ -56,10 +77,12 @@ int main() {
 
         if (bytesReceived > 0) {
             buffer[bytesReceived] = '\0';  // Null-terminate the received data
-            std::cout << "Received request:\n" << buffer << std::endl;
 
             // Print the client IP address
             std::cout << "Request received from " << inet_ntoa(clientAddress.sin_addr) << std::endl;
+
+            // parse the request 
+            parseRequest(buffer);
 
             std::string response = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nHello, World!";
             send(clientSocket, response.c_str(), response.size(), 0);
