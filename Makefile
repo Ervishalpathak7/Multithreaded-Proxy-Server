@@ -6,10 +6,10 @@ SRCS = Server.cpp ThreadPool.cpp
 all: $(TARGET)
 
 $(TARGET): $(SRCS)
-    $(CXX) $(CXXFLAGS) $(SRCS) -o $(TARGET)
+	$(CXX) $(CXXFLAGS) $(SRCS) -o $(TARGET)
 
 run: $(TARGET)
-    ./$(TARGET)
+	./$(TARGET)
 
 clean:
-    rm -f $(TARGET)
+	rm -f $(TARGET)
