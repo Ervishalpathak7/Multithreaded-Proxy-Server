@@ -1,1 +1,1 @@
-web: make run
+web: ./proxy_server
