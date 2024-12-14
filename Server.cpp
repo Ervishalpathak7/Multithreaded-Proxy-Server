@@ -4,98 +4,102 @@
 #include <netinet/in.h>
 #include <cstring>
 #include <arpa/inet.h>  // For inet_ntoa()
+#include "ThreadPool.h"
 
-
-
+// Parse the HTTP request
 void parseRequest(char* buffer) {
-    // Split the request line (first line of the HTTP request)
-    char* method = strtok(buffer, " ");  // e.g., "GET"
-    char* path = strtok(NULL, " ");      // e.g., "/"
-    char* version = strtok(NULL, "\r\n");  // e.g., "HTTP/1.1"
+    char* method = strtok(buffer, " ");
+    char* path = strtok(NULL, " ");
+    char* version = strtok(NULL, "\r\n");
 
     if (!method || !path || !version) {
-    std::cerr << "Malformed request" << std::endl;
-    return;
+        std::cerr << "[DEBUG] Malformed request." << std::endl;
+        return;
     }
 
-    // Print the parsed values
-    std::cout << "Method: " << method << std::endl;
-    std::cout << "Path: " << path << std::endl;
-    std::cout << "Version: " << version << std::endl;
+    std::cout << "[DEBUG] Method: " << method << "\n Path: " << path << ",\n Version: " << version << std::endl;
 }
 
-
-
 int main() {
-
-    // defining the port number
     int port = 8080;
 
+    std::cout << "[DEBUG] Starting server on port " << port << "..." << std::endl;
+
     // Create a socket
-    int serverSocket = socket(AF_INET, SOCK_STREAM , 0);
+    int serverSocket = socket(AF_INET, SOCK_STREAM, 0);
     if (serverSocket == -1) {
-        std::cerr << "Error creating socket" << std::endl;
+        std::cerr << "[DEBUG] Error creating socket." << std::endl;
         return -1;
     }
+    std::cout << "[DEBUG] Socket created successfully." << std::endl;
 
-    // Bind the socket to an IP address and port
+    // Bind the socket
     struct sockaddr_in serverAddress;
     serverAddress.sin_family = AF_INET;
     serverAddress.sin_port = htons(port);
     serverAddress.sin_addr.s_addr = INADDR_ANY;
-    
-    int bindStatus = bind(serverSocket , (struct sockaddr*)&serverAddress , sizeof(serverAddress));
-    if (bindStatus < 0) {
-        perror("Bind Error");
+
+    if (bind(serverSocket, (struct sockaddr*)&serverAddress, sizeof(serverAddress)) < 0) {
+        perror("[DEBUG] Bind Error");
         close(serverSocket);
         return -1;
     }
+    std::cout << "[DEBUG] Socket bound to port " << port << "." << std::endl;
 
-    // listen for incoming requests
+    // Start listening
     if (listen(serverSocket, 10) < 0) {
-        perror("Listen Failed");
+        perror("[DEBUG] Listen Failed");
         close(serverSocket);
         return -1;
     }
+    std::cout << "[DEBUG] Server is listening for incoming connections..." << std::endl;
 
-    std::cout << "Server is running on port " << port << '\n';
+    // Initialize and start the thread pool
+    ThreadPool pool(6);
+    pool.start(6);  // Start the thread pool
+    std::cout << "[DEBUG] Thread pool started with 4 threads." << std::endl;
 
-    while (1) {
+    while (true) {
         struct sockaddr_in clientAddress;
         socklen_t clientAddressLen = sizeof(clientAddress);
-        
-        // Accepting the request
+
+        std::cout << "[DEBUG] Waiting for a client connection..." << std::endl;
         int clientSocket = accept(serverSocket, (struct sockaddr*)&clientAddress, &clientAddressLen);
         if (clientSocket < 0) {
-            perror("Error in Accepting incoming request");
-            continue;  // Continue accepting other connections even if one fails
+            perror("[DEBUG] Error in Accepting incoming request");
+            continue;
         }
 
-        // Receive the request
-        char buffer[4096];
-        int bytesReceived = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);  // Ensure space for null-terminator
+        std::cout << "[DEBUG] Accepted connection from " << inet_ntoa(clientAddress.sin_addr) << "." << std::endl;
 
-        if (bytesReceived > 0) {
-            buffer[bytesReceived] = '\0';  // Null-terminate the received data
+        // Submit the task to the thread pool
+        pool.addTask([clientSocket, clientAddress]() {
+            std::cout << "[DEBUG] Thread started for client " << inet_ntoa(clientAddress.sin_addr) << "." << std::endl;
 
-            // Print the client IP address
-            std::cout << "Request received from " << inet_ntoa(clientAddress.sin_addr) << std::endl;
+            char buffer[4096];
+            int bytesReceived = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
+            if (bytesReceived > 0) {
+                buffer[bytesReceived] = '\0';
+                std::cout << "[DEBUG] Bytes received: " << bytesReceived << std::endl;
 
-            // parse the request 
-            parseRequest(buffer);
+                std::cout << "[DEBUG] Request received from " << inet_ntoa(clientAddress.sin_addr) << "." << std::endl;
+                parseRequest(buffer);
 
-            std::string response = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nHello, World!";
-            send(clientSocket, response.c_str(), response.size(), 0);
+                std::string response = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nHello, World!";
+                send(clientSocket, response.c_str(), response.size(), 0);
+            } else if (bytesReceived == 0) {
+                std::cout << "[DEBUG] Client disconnected." << std::endl;
+            } else {
+                std::cerr << "[DEBUG] Error receiving data." << std::endl;
+            }
 
-        } else if (bytesReceived == 0) {
-            std::cout << "Client disconnected" << std::endl;
-        } else {
-            std::cerr << "Error receiving data" << std::endl;
-        }
-
-        close(clientSocket); // Close client socket after response is sent
+            close(clientSocket);
+            std::cout << "[DEBUG] Connection closed for client " << inet_ntoa(clientAddress.sin_addr) << "." << std::endl;
+        });
     }
 
-    close(serverSocket); // Close the server socket after exiting the loop
+    pool.shutdown();  // Gracefully shut down the thread pool
+    close(serverSocket);
+    std::cout << "[DEBUG] Server shut down." << std::endl;
     return 0;
 }
