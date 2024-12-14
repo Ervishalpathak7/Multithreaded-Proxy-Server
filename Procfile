@@ -1,1 +1,1 @@
-web: ./proxy_server
+web: make && ./proxy_server
