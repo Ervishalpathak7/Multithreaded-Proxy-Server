@@ -1,5 +1,15 @@
-all:
-    g++ -std=c++17 Server.cpp ThreadPool.cpp -o proxy_server
+CXX = g++
+CXXFLAGS = -std=c++17
+TARGET = proxy_server
+SRCS = Server.cpp ThreadPool.cpp
 
-run:
-    ./proxy_server
+all: $(TARGET)
+
+$(TARGET): $(SRCS)
+    $(CXX) $(CXXFLAGS) $(SRCS) -o $(TARGET)
+
+run: $(TARGET)
+    ./$(TARGET)
+
+clean:
+    rm -f $(TARGET)
