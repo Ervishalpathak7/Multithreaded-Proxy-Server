@@ -1,72 +1,69 @@
 #include "ThreadPool.h"
 #include <iostream>
+#include <stdexcept>
+#include <exception>
 
 // Constructor to initialize the thread pool
 ThreadPool::ThreadPool(int numThreads) 
     : isShutdown(false), numThreads(numThreads) {
-    // Initialize other members if needed
+    for (int i = 0; i < numThreads; ++i) {
+        threads.emplace_back([this]() {
+            while (true) {
+                std::function<void()> task;
+                {
+                    std::unique_lock<std::mutex> lock(queueMutex);
+                    taskAvailable.wait(lock, [this]() { return isShutdown || !taskQueue.empty(); });
+                    if (isShutdown && taskQueue.empty()) {
+                        return; // Exit thread if shutdown and no tasks are available
+                    }
+                    task = std::move(taskQueue.front());
+                    taskQueue.pop();
+                }
+                try {
+                    task();
+                } catch (const std::exception &e) {
+                    std::cerr << "Task exception: " << e.what() << std::endl;
+                } catch (...) {
+                    std::cerr << "Task threw an unknown exception." << std::endl;
+                }
+            }
+        });
+    }
 }
 
 // Destructor to shut down the pool gracefully
 ThreadPool::~ThreadPool() {
-    shutdown(); 
+    shutdown();
 }
 
 // Add a new task to the queue
 void ThreadPool::addTask(std::function<void()> task) {
     {
         std::lock_guard<std::mutex> lock(queueMutex);
-        taskQueue.push(task);  // Add the task to the queue
-    }
-    taskAvailable.notify_one();  // Notify one waiting thread
-}
-
-// Start the worker threads
-void ThreadPool::start(int numThreads) {
-    this->numThreads = numThreads; // Store the thread count
-    auto worker = [this]() {
-        while (true) {
-            std::function<void()> task;
-            {
-                std::unique_lock<std::mutex> lock(queueMutex);
-                // Wait until tasks are available or shutdown is triggered
-                taskAvailable.wait(lock, [this]() { 
-                    return !taskQueue.empty() || isShutdown; 
-                });
-
-                // If shutting down and no tasks, exit the loop
-                if (isShutdown && taskQueue.empty()) {
-                    break;
-                }
-
-                // Get the task from the queue
-                task = taskQueue.front();
-                taskQueue.pop();
-            }
-            // Execute the task outside the lock to avoid blocking other threads
-            task();
+        if (isShutdown) {
+            throw std::runtime_error("Cannot add tasks to a shutting down ThreadPool.");
         }
-    };
-
-    // Create the specified number of threads
-    for (int i = 0; i < numThreads; ++i) {
-        threads.emplace_back(worker);  // Add a worker thread to the pool
+        taskQueue.push(std::move(task));
     }
+    taskAvailable.notify_one();
 }
 
 // Shutdown the thread pool
 void ThreadPool::shutdown() {
     {
         std::lock_guard<std::mutex> lock(queueMutex);
-        isShutdown = true;  // Set the shutdown flag
+        if (isShutdown) {
+            std::cerr << "ThreadPool is already shutting down!" << std::endl;
+            return;
+        }
+        isShutdown = true;
     }
-    taskAvailable.notify_all();  // Wake up all threads to finish processing
+    taskAvailable.notify_all(); // Wake up all threads to allow them to exit
 
+    // Wait for all threads to finish execution
     for (auto& thread : threads) {
         if (thread.joinable()) {
-            thread.join();  // Wait for all threads to finish
+            thread.join(); // Ensure all threads complete their work before shutting down
         }
     }
-
-    threads.clear(); // Clear the threads for reuse (if needed)
 }

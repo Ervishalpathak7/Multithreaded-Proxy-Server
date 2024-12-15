@@ -6,12 +6,12 @@
 #include <thread>
 #include <mutex>
 #include <condition_variable>
-#include <functional> // For std::function
+#include <functional>
 
 class ThreadPool {
 public:
-    // Constructor
-    ThreadPool(int numThreads);
+    // Constructor that takes the number of threads
+    explicit ThreadPool(int numThreads);
 
     // Destructor
     ~ThreadPool();
@@ -19,13 +19,11 @@ public:
     // Method to add a task to the queue
     void addTask(std::function<void()> task);
 
-    // Method to start the thread pool
-    void start(int numThreads);
-
     // Method to shut down the pool gracefully
     void shutdown();
 
 private:
+
     std::queue<std::function<void()>> taskQueue;  // Queue to hold tasks
     std::mutex queueMutex;                       // Mutex to protect task queue
     std::condition_variable taskAvailable;       // Condition variable for task notification

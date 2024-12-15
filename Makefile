@@ -1,15 +1,17 @@
 CXX = g++
-CXXFLAGS = -std=c++17
-TARGET = proxy_server
-SRCS = Server.cpp ThreadPool.cpp
+CXXFLAGS = -std=c++14 -Wall -pthread
+SRC = main.cpp Server.cpp ThreadPool.cpp
+OBJ = $(SRC:.cpp=.o)
+EXEC = server
 
-all: $(TARGET)
+# Default target to build the server
+all: $(EXEC)
 
-$(TARGET): $(SRCS)
-	$(CXX) $(CXXFLAGS) $(SRCS) -o $(TARGET)
+$(EXEC): $(OBJ)
+	$(CXX) $(OBJ) -o $(EXEC)
 
-run: $(TARGET)
-	./$(TARGET)
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) -c $<
 
 clean:
-	rm -f $(TARGET)
+	rm -f $(OBJ) $(EXEC)
