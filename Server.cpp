@@ -9,7 +9,10 @@
 #include "Server.h"
 #include <exception>  // Added this header
 #include <string>
+#include "LRUCache.h"
 
+// Global cache object with a capacity of 100 items
+LRUCache<std::string, std::string> cache(100);
 
 // Function to get the number of CPU cores
 int getNumberOfCores() {
@@ -143,29 +146,61 @@ std::string routeRequestToBackend(const std::string& method, const std::string& 
 // Function to handle client requests
 void handleClient(int clientSocket, struct sockaddr_in clientAddress) {
     char buffer[4096];
+    
+    // Receive the HTTP request
     int bytesReceived = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
-    if (bytesReceived > 0) {
-        buffer[bytesReceived] = '\0';
-        std::cout << "[DEBUG] Request received from " << inet_ntoa(clientAddress.sin_addr) << "." << std::endl;
-
-        // Parse the HTTP request
-        RequestInfo reqInfo = parseRequest(buffer);
-
-        // Route the request to the backend and get the response
-        std::string backendResponse = routeRequestToBackend(reqInfo.method, reqInfo.path);
-
-        //  std::string backendResponse = "HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\nHello World";
-
-        // Send the backend response back to the client
-        if (send(clientSocket, backendResponse.c_str(), backendResponse.size(), 0) < 0) {
-            perror("[DEBUG] Error sending response to client");
+    if (bytesReceived <= 0) {
+        if (bytesReceived == 0) {
+            std::cout << "[DEBUG] Client disconnected." << std::endl;
+        } else {
+            perror("[DEBUG] Error receiving data");
         }
-    } else if (bytesReceived == 0) {
-        std::cout << "[DEBUG] Client disconnected." << std::endl;
-    } else {
-        perror("[DEBUG] Error receiving data");
+        close(clientSocket);
+        return;
+    }
+    
+    buffer[bytesReceived] = '\0'; // Null-terminate the received data
+    std::cout << "[DEBUG] Request received from " << inet_ntoa(clientAddress.sin_addr) << "." << std::endl;
+
+    // Parse the HTTP request
+    RequestInfo reqInfo = parseRequest(buffer);
+    
+    // Check if the requested path exists in the cache
+    std::string cachedResponse;
+    if (cache.get(reqInfo.path, cachedResponse)) {
+        std::cout << "[DEBUG] Cache hit for path: " << reqInfo.path << std::endl;
+        if (send(clientSocket, cachedResponse.c_str(), cachedResponse.size(), 0) < 0) {
+            perror("[DEBUG] Error sending response from cache to client");
+        }
+        close(clientSocket);
+        return;
     }
 
+    // If not found in cache, route the request to the backend
+    std::string backendResponse = routeRequestToBackend(reqInfo.method, reqInfo.path);
+
+    // std::string backendResponse  = "HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\nHello World";
+
+
+    if (backendResponse.empty()) {
+        std::cerr << "[ERROR] Backend returned an empty response." << std::endl;
+        std::string errorResponse = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 23\r\n\r\nBackend error occurred.";
+        if (send(clientSocket, errorResponse.c_str(), errorResponse.size(), 0) < 0) {
+            perror("[DEBUG] Error sending error response to client");
+        }
+        close(clientSocket);
+        return;
+    }
+
+    // Store the backend response in the cache for future requests
+    cache.put(reqInfo.path, backendResponse);
+
+    // Send the backend response back to the client
+    if (send(clientSocket, backendResponse.c_str(), backendResponse.size(), 0) < 0) {
+        perror("[DEBUG] Error sending response to client");
+    }
+
+    // Close the client connection after serving the response
     close(clientSocket);
     std::cout << "[DEBUG] Connection closed for client " << inet_ntoa(clientAddress.sin_addr) << "." << std::endl;
 }
@@ -187,6 +222,7 @@ void startServer(int port) {
     // Initialize and start the thread pool
     int cores = getNumberOfCores();
     ThreadPool pool(cores);
+
     std::cout << "[DEBUG] Thread pool started with " << cores << " threads." << std::endl;
 
     while (true) {

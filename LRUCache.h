@@ -1,24 +1,23 @@
 #ifndef LRU_CACHE_H
 #define LRU_CACHE_H
 
+#include <iostream>
 #include <list>
-#include <utility> // For std::pair
+#include <unordered_map>
+#include <mutex>
 
 template <typename KeyType, typename ValueType>
 class LRUCache {
 public:
-    // Constructor to initialize the cache with a given capacity
-    explicit LRUCache(size_t capacity);
-
-    // Method to get the value associated with a key
+    LRUCache(size_t capacity);
     bool get(const KeyType& key, ValueType& value);
-
-    // Method to add or update a key-value pair in the cache
     void put(const KeyType& key, const ValueType& value);
 
 private:
-    size_t capacity; // Maximum capacity of the cache
-    std::list<std::pair<KeyType, ValueType>> cache; // List to store key-value pairs
+    size_t capacity;
+    std::list<std::pair<KeyType, ValueType>> usageOrder;  // List to keep track of access order (key, value)
+    std::unordered_map<KeyType, typename std::list<std::pair<KeyType, ValueType>>::iterator> cache;  // Hashmap for fast lookup
+    std::mutex cacheMutex;  // Mutex for thread safety
 };
 
-#endif // LRU_CACHE_H
+#endif
