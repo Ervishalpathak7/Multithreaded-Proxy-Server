@@ -29,7 +29,7 @@ std::string routeRequestToBackend(const std::string& method, const std::string& 
 
 
 // function to handle client req
-void handleClient(int clientSocket, struct sockaddr_in clientAddress);
+void handleClient(int clientSocket, struct sockaddr_in clientAddress , auto start );
 
 // function to start the server
 void startServer(int port);

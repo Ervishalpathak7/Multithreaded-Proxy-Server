@@ -6,10 +6,12 @@
 #include <netdb.h>  // For gethostbyname()
 #include <arpa/inet.h>  // For inet_ntoa()
 #include "ThreadPool.h"
-#include "Server.h"
 #include <exception>  // Added this header
 #include <string>
-#include "LRUCache.h"
+#include<chrono>
+#include "Server.h"
+#include "Lrucache.h"
+#include "Logger.h"
 
 // Global cache object with a capacity of 100 items
 LRUCache<std::string, std::string> cache(100);
@@ -19,7 +21,7 @@ int getNumberOfCores() {
     long cores = sysconf(_SC_NPROCESSORS_ONLN);
     if (cores == -1) {
         std::cerr << "[DEBUG] Error determining number of cores. Defaulting to 1." << std::endl;
-        return 1;
+        return 4;
     }
     return static_cast<int>(cores);
 }
@@ -39,7 +41,6 @@ int createServerSocket(int port) {
         return -1;
     }
 
-    std::cout << "[DEBUG] Socket created successfully." << std::endl;
     return serverSocket;
 }
 
@@ -75,7 +76,7 @@ RequestInfo parseRequest(char* buffer) {
     reqInfo.path = path;
     reqInfo.version = version;
 
-    std::cout << "[DEBUG] Method: " << reqInfo.method << "\n Path: " << reqInfo.path << "\n Version: " << reqInfo.version << std::endl;
+    // std::cout << "[DEBUG] Method: " << reqInfo.method << "\n Path: " << reqInfo.path << "\n Version: " << reqInfo.version << std::endl;
     return reqInfo;
 }
 
@@ -144,51 +145,85 @@ std::string routeRequestToBackend(const std::string& method, const std::string& 
 }
 
 // Function to handle client requests
-void handleClient(int clientSocket, struct sockaddr_in clientAddress) {
+void handleClient(int clientSocket, struct sockaddr_in clientAddress, auto waitingTimeStart) {
     char buffer[4096];
-    
+
+    // Capture the time when the request finishes waiting in the queue and starts processing
+    auto waitingTimeFinished = std::chrono::high_resolution_clock::now();
+    auto waitingTime = std::chrono::duration_cast<std::chrono::milliseconds>(waitingTimeFinished - waitingTimeStart).count();
+
     // Receive the HTTP request
+    auto processingTimeStart = std::chrono::high_resolution_clock::now();
     int bytesReceived = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
+
     if (bytesReceived <= 0) {
         if (bytesReceived == 0) {
-            std::cout << "[DEBUG] Client disconnected." << std::endl;
+            // std::cout << "[DEBUG] Client disconnected." << std::endl;
         } else {
             perror("[DEBUG] Error receiving data");
         }
-        close(clientSocket);
+        close(clientSocket);  // Close connection on error or client disconnect
         return;
     }
-    
+
     buffer[bytesReceived] = '\0'; // Null-terminate the received data
-    std::cout << "[DEBUG] Request received from " << inet_ntoa(clientAddress.sin_addr) << "." << std::endl;
 
     // Parse the HTTP request
     RequestInfo reqInfo = parseRequest(buffer);
+    if (reqInfo.method.empty() || reqInfo.path.empty() || reqInfo.version.empty()) {
+        // Invalid request, send error response
+        std::string errorResponse = "HTTP/1.1 400 Bad Request\r\nContent-Length: 15\r\n\r\nInvalid Request";
+        if (send(clientSocket, errorResponse.c_str(), errorResponse.size(), 0) < 0) {
+            perror("[DEBUG] Error sending error response to client");
+        }
+
+        // Log the invalid request
+        auto processingTimeEnd = std::chrono::high_resolution_clock::now();
+        long processingTime = std::chrono::duration_cast<std::chrono::milliseconds>(processingTimeEnd - processingTimeStart).count();
+        auto totalTime = std::chrono::duration_cast<std::chrono::milliseconds>(processingTimeEnd - waitingTimeStart).count();
+        logRequest(inet_ntoa(clientAddress.sin_addr), reqInfo.method, reqInfo.path, 400, waitingTime, processingTime, totalTime, "Invalid Request");
+
+        close(clientSocket); // Close after sending error response
+        return;
+    }
     
     // Check if the requested path exists in the cache
     std::string cachedResponse;
     if (cache.get(reqInfo.path, cachedResponse)) {
-        std::cout << "[DEBUG] Cache hit for path: " << reqInfo.path << std::endl;
+        // Cache hit
         if (send(clientSocket, cachedResponse.c_str(), cachedResponse.size(), 0) < 0) {
             perror("[DEBUG] Error sending response from cache to client");
+            close(clientSocket);  // Close on send failure
+            return;
         }
-        close(clientSocket);
+
+        // Log cache hit
+        auto processingTimeEnd = std::chrono::high_resolution_clock::now();
+        long processingTime = std::chrono::duration_cast<std::chrono::milliseconds>(processingTimeEnd - processingTimeStart).count();
+        auto totalTime = std::chrono::duration_cast<std::chrono::milliseconds>(processingTimeEnd - waitingTimeStart).count();
+        logRequest(inet_ntoa(clientAddress.sin_addr), reqInfo.method, reqInfo.path, 200, waitingTime, processingTime, totalTime, "Served from Cache");
+
+        close(clientSocket); // Close after response is sent
         return;
     }
 
     // If not found in cache, route the request to the backend
     std::string backendResponse = routeRequestToBackend(reqInfo.method, reqInfo.path);
 
-    // std::string backendResponse  = "HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\nHello World";
-
-
     if (backendResponse.empty()) {
-        std::cerr << "[ERROR] Backend returned an empty response." << std::endl;
+        // Backend error
         std::string errorResponse = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 23\r\n\r\nBackend error occurred.";
         if (send(clientSocket, errorResponse.c_str(), errorResponse.size(), 0) < 0) {
             perror("[DEBUG] Error sending error response to client");
         }
-        close(clientSocket);
+
+        // Log backend error
+        auto processingTimeEnd = std::chrono::high_resolution_clock::now();
+        long processingTime = std::chrono::duration_cast<std::chrono::milliseconds>(processingTimeEnd - processingTimeStart).count();
+        auto totalTime = std::chrono::duration_cast<std::chrono::milliseconds>(processingTimeEnd - waitingTimeStart).count();
+        logRequest(inet_ntoa(clientAddress.sin_addr), reqInfo.method, reqInfo.path, 500, waitingTime, processingTime, totalTime, "Backend Error");
+
+        close(clientSocket); // Close after sending error response
         return;
     }
 
@@ -198,12 +233,20 @@ void handleClient(int clientSocket, struct sockaddr_in clientAddress) {
     // Send the backend response back to the client
     if (send(clientSocket, backendResponse.c_str(), backendResponse.size(), 0) < 0) {
         perror("[DEBUG] Error sending response to client");
+        close(clientSocket);  // Close on send failure
+        return;
     }
+
+    // Log the successful response
+    auto processingTimeEnd = std::chrono::high_resolution_clock::now();
+    long processingTime = std::chrono::duration_cast<std::chrono::milliseconds>(processingTimeEnd - processingTimeStart).count();
+    auto totalTime = std::chrono::duration_cast<std::chrono::milliseconds>(processingTimeEnd - waitingTimeStart).count();
+    logRequest(inet_ntoa(clientAddress.sin_addr), reqInfo.method, reqInfo.path, 200, waitingTime, processingTime, totalTime, "Served from Backend");
 
     // Close the client connection after serving the response
     close(clientSocket);
-    std::cout << "[DEBUG] Connection closed for client " << inet_ntoa(clientAddress.sin_addr) << "." << std::endl;
 }
+
 
 // Function to initialize the server
 void startServer(int port) {
@@ -217,30 +260,26 @@ void startServer(int port) {
         close(serverSocket);
         return;
     }
-    std::cout << "[DEBUG] Server is listening for incoming connections..." << std::endl;
 
     // Initialize and start the thread pool
-    int cores = getNumberOfCores();
+    int cores = 4;
     ThreadPool pool(cores);
+    setupLogger();
 
     std::cout << "[DEBUG] Thread pool started with " << cores << " threads." << std::endl;
 
     while (true) {
-        std::cout << "[DEBUG] Waiting for a client connection..." << std::endl;
 
         struct sockaddr_in clientAddress;
         socklen_t clientAddressLen = sizeof(clientAddress);
         int clientSocket = accept(serverSocket, (struct sockaddr*)&clientAddress, &clientAddressLen);
+        auto waitingTimeStart = std::chrono::high_resolution_clock::now();
         if (clientSocket < 0) {
             perror("[DEBUG] Error in accepting incoming request");
             continue;
         }
-
-        std::cout << "[DEBUG] Accepted connection from " << inet_ntoa(clientAddress.sin_addr) << "." << std::endl;
-
-        // Submit the task to the thread pool
-        pool.addTask([clientSocket, clientAddress]() {
-            handleClient(clientSocket, clientAddress);
+        pool.addTask([clientSocket, clientAddress , waitingTimeStart]() {
+            handleClient(clientSocket, clientAddress , waitingTimeStart);
         });
     }
 
