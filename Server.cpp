@@ -8,41 +8,82 @@
 #include "ThreadPool.h"
 #include <exception>  // Added this header
 #include <string>
+#include <sstream>
 #include<chrono>
 #include "Server.h"
-#include "Lrucache.h"
 #include "Logger.h"
+#include "TokenBucket.h"   // Add TokenBucket class
+#include <unordered_map>
+#include <mutex>
+#include "RequestException.h"
+#include "Lrucache.h"
 
-// Global cache object with a capacity of 100 items
+
+// Rate limiter to prevent request flooding
+AdvancedRateLimiter globalRateLimiter;
+
+
 LRUCache<std::string, std::string> cache(100);
+
+
+std::mutex rateLimiterMutex;     // Mutex for thread-safe rate limit checks
+
+
+std::string generateErrorResponse(int statusCode, const std::string& message) {
+    std::stringstream response;
+    response << "HTTP/1.1 " << statusCode << " " 
+             << (statusCode == 429 ? "Too Many Requests" : 
+                 statusCode == 500 ? "Internal Server Error" : "Bad Request") 
+             << "\r\n"
+             << "Content-Type: text/plain\r\n"
+             << "Content-Length: " << message.length() << "\r\n"
+             << "\r\n"
+             << message;
+    return response.str();
+}
+
+// Improve IP conversion to handle potential conversion errors
+std::string getClientIP(struct sockaddr_in clientAddress) {
+    char ipStr[INET_ADDRSTRLEN];
+    if (inet_ntop(AF_INET, &(clientAddress.sin_addr), ipStr, INET_ADDRSTRLEN) == nullptr) {
+        logError("IP Conversion Failed", strerror(errno));
+        return "unknown";
+    }
+    return std::string(ipStr);
+}
+
 
 // Function to get the number of CPU cores
 int getNumberOfCores() {
     long cores = sysconf(_SC_NPROCESSORS_ONLN);
     if (cores == -1) {
-        std::cerr << "[DEBUG] Error determining number of cores. Defaulting to 1." << std::endl;
+        logError("Error determining number of cores", "Defaulting to 4 cores");
         return 4;
     }
     return static_cast<int>(cores);
 }
 
+
 // Function to create a socket
 int createServerSocket(int port) {
+    // Create a TCP socket
     int serverSocket = socket(AF_INET, SOCK_STREAM, 0);
     if (serverSocket == -1) {
-        std::cerr << "[DEBUG] Error creating socket." << std::endl;
+        logError("Socket creation failed", "Unable to create server socket");
         return -1;
     }
 
+    // Enable socket reuse to prevent "Address already in use" errors
     int opt = 1;
-    if (setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-        perror("[DEBUG] setsockopt failed");
+    if (setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt)) < 0) {
+        logError("Socket option setting failed", strerror(errno));
         close(serverSocket);
         return -1;
     }
 
     return serverSocket;
 }
+
 
 // Function to bind the server socket
 bool bindSocket(int serverSocket, int port) {
@@ -52,11 +93,14 @@ bool bindSocket(int serverSocket, int port) {
     serverAddress.sin_addr.s_addr = INADDR_ANY;
 
     if (bind(serverSocket, (struct sockaddr*)&serverAddress, sizeof(serverAddress)) < 0) {
-        perror("[DEBUG] Bind Error");
+        logError("Socket binding failed", 
+                 "Port: " + std::to_string(port) + 
+                 " Error: " + strerror(errno));
         close(serverSocket);
         return false;
     }
-    std::cout << "[DEBUG] Socket bound to port " << port << "." << std::endl;
+    
+    std::cout << "[INFO] Socket successfully bound to port " << port << std::endl;
     return true;
 }
 
@@ -144,146 +188,266 @@ std::string routeRequestToBackend(const std::string& method, const std::string& 
     return backendResponse;
 }
 
+
 // Function to handle client requests
 void handleClient(int clientSocket, struct sockaddr_in clientAddress, auto waitingTimeStart) {
+
+    // Buffer to store incoming request data
     char buffer[4096];
 
-    // Capture the time when the request finishes waiting in the queue and starts processing
+    // waiting time finished as the request is started processing
     auto waitingTimeFinished = std::chrono::high_resolution_clock::now();
-    auto waitingTime = std::chrono::duration_cast<std::chrono::milliseconds>(waitingTimeFinished - waitingTimeStart).count();
+    auto waitingTime = std::chrono::duration_cast<std::chrono::milliseconds>(waitingTimeFinished - waitingTimeStart ).count();
 
-    // Receive the HTTP request
+    // processing time start 
     auto processingTimeStart = std::chrono::high_resolution_clock::now();
-    int bytesReceived = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
 
-    if (bytesReceived <= 0) {
-        if (bytesReceived == 0) {
-            // std::cout << "[DEBUG] Client disconnected." << std::endl;
-        } else {
-            perror("[DEBUG] Error receiving data");
-        }
-        close(clientSocket);  // Close connection on error or client disconnect
-        return;
-    }
+    // get the client IP address
+    std::string clientIP = getClientIP(clientAddress);
 
-    buffer[bytesReceived] = '\0'; // Null-terminate the received data
+    try {
+        // Rate Limiting: Prevent excessive requests from a single IP
+        if (!globalRateLimiter.allowRequest(clientIP)) {
+            // Send 429 Too Many Requests response
+            std::string ratelimitResponse = generateErrorResponse(
+                429, 
+                "Too many requests. Please slow down and try again later."
+            );
+            
+            // Attempt to send rate limit response, ignore send errors
+            send(clientSocket, ratelimitResponse.c_str(), ratelimitResponse.length(), 0);
+            
+            // end processing time 
+            auto processingTimeEnd = std::chrono::high_resolution_clock::now();
+            long processingTime = std::chrono::duration_cast<std::chrono::milliseconds>(
+                processingTimeEnd - processingTimeStart
+            ).count();
 
-    // Parse the HTTP request
-    RequestInfo reqInfo = parseRequest(buffer);
-    if (reqInfo.method.empty() || reqInfo.path.empty() || reqInfo.version.empty()) {
-        // Invalid request, send error response
-        std::string errorResponse = "HTTP/1.1 400 Bad Request\r\nContent-Length: 15\r\n\r\nInvalid Request";
-        if (send(clientSocket, errorResponse.c_str(), errorResponse.size(), 0) < 0) {
-            perror("[DEBUG] Error sending error response to client");
-        }
-
-        // Log the invalid request
-        auto processingTimeEnd = std::chrono::high_resolution_clock::now();
-        long processingTime = std::chrono::duration_cast<std::chrono::milliseconds>(processingTimeEnd - processingTimeStart).count();
-        auto totalTime = std::chrono::duration_cast<std::chrono::milliseconds>(processingTimeEnd - waitingTimeStart).count();
-        logRequest(inet_ntoa(clientAddress.sin_addr), reqInfo.method, reqInfo.path, 400, waitingTime, processingTime, totalTime, "Invalid Request");
-
-        close(clientSocket); // Close after sending error response
-        return;
-    }
-    
-    // Check if the requested path exists in the cache
-    std::string cachedResponse;
-    if (cache.get(reqInfo.path, cachedResponse)) {
-        // Cache hit
-        if (send(clientSocket, cachedResponse.c_str(), cachedResponse.size(), 0) < 0) {
-            perror("[DEBUG] Error sending response from cache to client");
-            close(clientSocket);  // Close on send failure
+            // Log rate limit event with detailed information
+            logRequest(
+                clientIP, 
+                "RATE_LIMITED", 
+                "N/A", 
+                429, 
+                waitingTime, processingTime , processingTime + waitingTime, 
+                "IP rate limit exceeded"
+            );
+            // Close socket and exit function
+            close(clientSocket);
             return;
         }
 
-        // Log cache hit
-        auto processingTimeEnd = std::chrono::high_resolution_clock::now();
-        long processingTime = std::chrono::duration_cast<std::chrono::milliseconds>(processingTimeEnd - processingTimeStart).count();
-        auto totalTime = std::chrono::duration_cast<std::chrono::milliseconds>(processingTimeEnd - waitingTimeStart).count();
-        logRequest(inet_ntoa(clientAddress.sin_addr), reqInfo.method, reqInfo.path, 200, waitingTime, processingTime, totalTime, "Served from Cache");
-
-        close(clientSocket); // Close after response is sent
-        return;
-    }
-
-    // If not found in cache, route the request to the backend
-    std::string backendResponse = routeRequestToBackend(reqInfo.method, reqInfo.path);
-
-    if (backendResponse.empty()) {
-        // Backend error
-        std::string errorResponse = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 23\r\n\r\nBackend error occurred.";
-        if (send(clientSocket, errorResponse.c_str(), errorResponse.size(), 0) < 0) {
-            perror("[DEBUG] Error sending error response to client");
+        
+        // Receive HTTP request with robust error handling
+        int bytesReceived = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
+        
+        // Handle connection errors or client disconnection
+        if (bytesReceived <= 0) {
+            if (bytesReceived == 0) {
+                auto processingTimeEnd = std::chrono::high_resolution_clock::now();
+                long processingTime = std::chrono::duration_cast<std::chrono::milliseconds>(
+                processingTimeEnd - processingTimeStart
+            ).count();
+                logRequest(clientIP, "DISCONNECT", "N/A", 499, waitingTime, processingTime, waitingTime + processingTime , "Client Closed Connection");
+            } else {
+                auto processingTimeEnd = std::chrono::high_resolution_clock::now();
+                long processingTime = std::chrono::duration_cast<std::chrono::milliseconds>(processingTimeEnd - processingTimeStart).count();
+                logRequest(clientIP, "ERROR", "N/A", 500,waitingTime, processingTime, waitingTime + processingTime, "Socket Receive Error");
+                perror("Error receiving client data");
+            }
+            close(clientSocket);
+            return;
         }
 
-        // Log backend error
+        // Null-terminate received data for safe string processing
+        buffer[bytesReceived] = '\0';
+
+        // Parse the HTTP request with comprehensive validation
+        RequestInfo reqInfo = parseRequest(buffer);
+        
+        // Validate parsed request
+        if (reqInfo.method.empty() || reqInfo.path.empty() || reqInfo.version.empty()) {
+            auto processingTimeEnd = std::chrono::high_resolution_clock::now();
+            long processingTime = std::chrono::duration_cast<std::chrono::milliseconds>(
+                processingTimeEnd - processingTimeStart
+            ).count();
+            throw RequestException("Invalid Request Format", 400 , waitingTime , processingTime );
+        }
+
+        // Check if request is in cache to avoid unnecessary backend calls
+        std::string cachedResponse;
+        if (cache.get(reqInfo.path, cachedResponse)) {
+
+            // Cache hit: Send cached response
+            if (send(clientSocket, cachedResponse.c_str(), cachedResponse.size(), 0) < 0) {
+                throw std::runtime_error("Failed to send cached response");
+            }
+
+            // Log cache hit with performance metrics
+            auto processingTimeEnd = std::chrono::high_resolution_clock::now();
+            long processingTime = std::chrono::duration_cast<std::chrono::milliseconds>(
+                processingTimeEnd - processingTimeStart
+            ).count();
+            
+            logRequest(
+                inet_ntoa(clientAddress.sin_addr), 
+                reqInfo.method, 
+                reqInfo.path, 
+                200, 
+                waitingTime, 
+                processingTime, 
+                processingTime + waitingTime, 
+                "Served from Cache"
+            );
+
+            close(clientSocket);
+            return;
+        }
+
+        // Route request to backend if not in cache
+        std::string backendResponse = routeRequestToBackend(reqInfo.method, reqInfo.path);
+
+        if (backendResponse.empty()) {
+            // Backend returned empty response
+            auto processingTimeEnd = std::chrono::high_resolution_clock::now();
+            long processingTime = std::chrono::duration_cast<std::chrono::milliseconds>(
+                processingTimeEnd - processingTimeStart
+            ).count();
+            throw RequestException("Backend Error", 500 , waitingTime , processingTime);
+        }
+
+        // Cache the backend response for future requests
+        cache.put(reqInfo.path, backendResponse);
+
+        // Send backend response to client
+        if (send(clientSocket, backendResponse.c_str(), backendResponse.size(), 0) < 0) {
+            throw std::runtime_error("Failed to send backend response");
+        }
+
+        // Log successful backend request
         auto processingTimeEnd = std::chrono::high_resolution_clock::now();
-        long processingTime = std::chrono::duration_cast<std::chrono::milliseconds>(processingTimeEnd - processingTimeStart).count();
-        auto totalTime = std::chrono::duration_cast<std::chrono::milliseconds>(processingTimeEnd - waitingTimeStart).count();
-        logRequest(inet_ntoa(clientAddress.sin_addr), reqInfo.method, reqInfo.path, 500, waitingTime, processingTime, totalTime, "Backend Error");
+        long processingTime = std::chrono::duration_cast<std::chrono::milliseconds>(
+            processingTimeEnd - processingTimeStart
+        ).count();
+        
+        logRequest(
+            inet_ntoa(clientAddress.sin_addr), 
+            reqInfo.method, 
+            reqInfo.path, 
+            200, 
+            waitingTime, 
+            processingTime, 
+            processingTime + waitingTime, 
+            "Served from Backend"
+        );
+    }
+   catch (const RequestException& e) {
+    // Handle specific request-related exceptions
+    std::string errorResponse = generateErrorResponse(e.getStatusCode(), e.what());
+    send(clientSocket, errorResponse.c_str(), errorResponse.size(), 0);
 
-        close(clientSocket); // Close after sending error response
-        return;
+    // Log the error with corrected function calls
+    logRequest(
+        inet_ntoa(clientAddress.sin_addr), 
+        "CLIENT_ERROR",       // Use a more descriptive method name
+        "N/A", 
+        e.getStatusCode(), 
+        e.getWaitingTime(),   
+        e.getProcessingTime(),
+        e.getTotalTime(),   
+        e.what()
+    );
+}
+    catch (const std::exception& e) {
+        // Catch any unexpected exceptions
+        std::string errorResponse = generateErrorResponse(500, "Internal Server Error");
+        send(clientSocket, errorResponse.c_str(), errorResponse.size(), 0);
+        
+        // Log unexpected errors
+        logRequest(
+            inet_ntoa(clientAddress.sin_addr), 
+            "FATAL", 
+            "N/A", 
+            500, 
+            0,
+            0,
+            0,
+            e.what()
+        );
     }
 
-    // Store the backend response in the cache for future requests
-    cache.put(reqInfo.path, backendResponse);
-
-    // Send the backend response back to the client
-    if (send(clientSocket, backendResponse.c_str(), backendResponse.size(), 0) < 0) {
-        perror("[DEBUG] Error sending response to client");
-        close(clientSocket);  // Close on send failure
-        return;
-    }
-
-    // Log the successful response
-    auto processingTimeEnd = std::chrono::high_resolution_clock::now();
-    long processingTime = std::chrono::duration_cast<std::chrono::milliseconds>(processingTimeEnd - processingTimeStart).count();
-    auto totalTime = std::chrono::duration_cast<std::chrono::milliseconds>(processingTimeEnd - waitingTimeStart).count();
-    logRequest(inet_ntoa(clientAddress.sin_addr), reqInfo.method, reqInfo.path, 200, waitingTime, processingTime, totalTime, "Served from Backend");
-
-    // Close the client connection after serving the response
+    // Ensure socket is always closed, even if an exception occurs
     close(clientSocket);
 }
 
-
 // Function to initialize the server
 void startServer(int port) {
+    // Validate port range
+    if (port < 1024 || port > 65535) {
+        logError("Invalid port", "Port must be between 1024 and 65535");
+        throw std::invalid_argument("Invalid port number");
+    }
+
+    // Create server socket
     int serverSocket = createServerSocket(port);
-    if (serverSocket == -1) return;
+    if (serverSocket == -1) {
+        logError("Server initialization failed", "Could not create socket");
+        return;
+    }
 
-    if (!bindSocket(serverSocket, port)) return;
-
-    if (listen(serverSocket, 10) < 0) {
-        perror("[DEBUG] Listen Failed");
+    // Bind socket
+    if (!bindSocket(serverSocket, port)) {
         close(serverSocket);
         return;
     }
 
-    // Initialize and start the thread pool
-    int cores = 4;
+    // Start listening with improved backlog
+    if (listen(serverSocket, SOMAXCONN) < 0) {
+        logError("Listen failed", strerror(errno));
+        close(serverSocket);
+        return;
+    }
+
+    // Determine thread pool size based on available cores
+    int cores = getNumberOfCores();
     ThreadPool pool(cores);
     setupLogger();
 
-    std::cout << "[DEBUG] Thread pool started with " << cores << " threads." << std::endl;
+    std::cout << "[INFO] Server started successfully on port " << port 
+              << " with " << cores << " worker threads" << std::endl;
 
+    // Main server loop with signal handling considerations
     while (true) {
-
         struct sockaddr_in clientAddress;
         socklen_t clientAddressLen = sizeof(clientAddress);
-        int clientSocket = accept(serverSocket, (struct sockaddr*)&clientAddress, &clientAddressLen);
+        
+        // Accept incoming connection with error handling
+        int clientSocket = accept(serverSocket, 
+                                  (struct sockaddr*)&clientAddress, 
+                                  &clientAddressLen);
+        
         auto waitingTimeStart = std::chrono::high_resolution_clock::now();
+        
         if (clientSocket < 0) {
-            perror("[DEBUG] Error in accepting incoming request");
+            // Log specific accept errors
+            if (errno == EMFILE || errno == ENFILE) {
+                logError("Accept failed", "Too many open file descriptors");
+                // Implement some form of back-off or connection shedding
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            } else {
+                logError("Accept failed", strerror(errno));
+            }
             continue;
         }
-        pool.addTask([clientSocket, clientAddress , waitingTimeStart]() {
-            handleClient(clientSocket, clientAddress , waitingTimeStart);
+
+        // Add client handling task to thread pool
+        pool.addTask([clientSocket, clientAddress, waitingTimeStart]() {
+            handleClient(clientSocket, clientAddress, waitingTimeStart);
         });
     }
 
-    pool.shutdown();  // Gracefully shut down the thread pool
+    // Graceful shutdown (though this will rarely be reached in practice)
+    pool.shutdown();
     close(serverSocket);
-    std::cout << "[DEBUG] Server shut down." << std::endl;
+    std::cout << "[INFO] Server shutdown complete." << std::endl;
 }

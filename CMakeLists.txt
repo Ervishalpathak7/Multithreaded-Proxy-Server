@@ -9,7 +9,7 @@ set(CMAKE_CXX_STANDARD 20)
 # Specify the paths to Prometheus library and include directories
 
 # the source files for your project
-add_executable(server main.cpp ThreadPool.cpp Lrucache.cpp Server.cpp Logger.cpp)
+add_executable(server main.cpp ThreadPool.cpp Lrucache.cpp Server.cpp Logger.cpp TokenBucket.cpp)
 
 # External libraries (pthread, spdlog, fmt)
 target_link_libraries(server pthread spdlog fmt)
