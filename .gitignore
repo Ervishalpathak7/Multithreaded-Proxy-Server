@@ -7,6 +7,8 @@
 /CMakeFiles/
 /Makefile
 /*.log
+/*.cmake
+/*.vcxproj
 
 # Ignore IDE and editor specific files
 .vscode/
