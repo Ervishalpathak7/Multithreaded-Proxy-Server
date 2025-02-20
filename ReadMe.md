@@ -1,12 +1,14 @@
-# Multithreaded Proxy Server
+# Multithreaded Proxy Server with Load Balancing and Caching
 
 ## Overview
 
-A high-performance multithreaded proxy server implemented in C++, designed to efficiently handle concurrent network connections with advanced caching, logging, rate limiting, and load balancing capabilities. This server provides a robust solution for proxying HTTP requests with minimal overhead and maximum scalability.
+A high-performance, multithreaded proxy server that optimizes network traffic and enhances backend scalability. It balances client requests across multiple backend servers while caching frequently requested responses using LRU caching.
+
 
 ## Key Features
 
-- **Multithreaded** Architecture: Leverages a sophisticated thread pool to manage multiple client connections concurrently, ensuring optimal resource utilization and responsive performance.
+
+- **Multithreaded Architecture**: Efficient request handling with concurrent processing using thread pool to manage multiple client connections  ensuring optimal resource utilization and responsive performance.
 
 - **Intelligent Caching**: Implements a Least Recently Used (LRU) caching mechanism to store and retrieve HTTP responses, dramatically reducing redundant backend requests and improving response times.
 
@@ -23,24 +25,12 @@ A high-performance multithreaded proxy server implemented in C++, designed to ef
 ## Technology Stack
 
 - **Language**: C++ (Modern C++ standards)
-- **Build System**: CMake
+- **Build System**: Docker
 - **Concurrency**: Thread Pool design pattern
-- **Caching**: Custom LRU Cache implementation
-- **Logging**: Utilizes spdlog and fmt libraries
-- **Rate Limiting**: Custom rate limiting implementation for HTTP requests
+- **Caching**: LRU Cache implementation with Redis
+- **Rate Limiting**: Redis-based rate limiting (Token Bucket Algorithm)
 - **Load Balancing**: Round-robin load balancing for distributing traffic across backend server
 
-## Prerequisites
-
-- **Compiler**: Modern C++ compiler (g++ ≥ 9.0 or clang++)
-- **Build Tools**: 
-  - **CMake** (version 3.10 or later)
-  - **pthread** library
-- **Dependencies**:
-  - `spdlog`
-  - `fmt`
-
-## Installation
 
 ### Build Instructions
 
