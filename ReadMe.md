@@ -1,124 +1,62 @@
 # Multithreaded Proxy Server with Load Balancing and Caching
 
-## Overview
+## 📌 Overview
+This project is a high-performance **Proxy Server** built using **Golang, Redis, and Docker**. It efficiently handles multiple client requests, distributes traffic across backend servers, and optimizes responses through caching. The goal is to improve **scalability, performance, and security** for web applications.
 
-A high-performance, multithreaded proxy server that optimizes network traffic and enhances backend scalability. It balances client requests across multiple backend servers while caching frequently requested responses using LRU caching.
+## 🚀 Features
+- **Goroutine-Based Concurrency** → Efficiently handles multiple connections.
+- **Load Balancing** → Distributes traffic using **Round Robin / Least Connections** strategy.
+- **Caching (Redis LRU)** → Stores frequently requested responses to reduce backend load.
+- **Connection Pooling** → Maintains persistent connections for faster request forwarding.
+- **Rate Limiting** → Prevents excessive requests from overloading the backend.
+- **Logging & Monitoring** → Tracks request details, errors, and server health.
+- **Timeout & Retry Mechanism** → Retries failed requests and handles timeouts gracefully.
+- **Dockerized Deployment** → Easy containerization for scalable and portable deployment.
 
+## 📂 Tech Stack
+- **Golang** → Efficient concurrency & networking capabilities.
+- **Redis** → Caching and rate limiting with LRU eviction strategy.
+- **Docker** → Containerization for scalability & deployment.
 
-## Key Features
+## ⚙️ Architecture
+```
+Client → Proxy Server → Load Balancer → Backend Servers
+        ⬆️              ⬇️  
+       Redis Cache (for caching responses)
+```
+1. The proxy **intercepts client requests** and checks **Redis cache**.
+2. If cache hit ✅ → Serve response from Redis.
+3. If cache miss ❌ → Forward request to backend via **load balancer**.
+4. Store response in **Redis** before sending it to the client.
 
+## 🛠️ Setup & Installation
+### Prerequisites
+- Install **Golang** (>=1.18)
+- Install **Docker & Docker Compose**
+- Install **Redis**
 
-- **Multithreaded Architecture**: Efficient request handling with concurrent processing using thread pool to manage multiple client connections  ensuring optimal resource utilization and responsive performance.
-
-- **Intelligent Caching**: Implements a Least Recently Used (LRU) caching mechanism to store and retrieve HTTP responses, dramatically reducing redundant backend requests and improving response times.
-
-- **Comprehensive Logging**: Integrates a flexible, custom logging system that provides granular tracking of HTTP request and response metadata for comprehensive monitoring and debugging.
-
-- **Rate Limiting**: Implements advanced rate limiting mechanisms to control the number of requests a client can make within a specified time window, preventing abuse and ensuring fair resource distribution.
-
-- **Load Balancing**: Provides load balancing capabilities to distribute client requests across multiple backend servers, ensuring high availability and improved fault tolerance.
-
-- **Lightweight Design**: Operates without external database dependencies, ensuring a lean, high-performance proxy solution that can be easily integrated into various network architectures.
-
-
-
-## Technology Stack
-
-- **Language**: C++ (Modern C++ standards)
-- **Build System**: Docker
-- **Concurrency**: Thread Pool design pattern
-- **Caching**: LRU Cache implementation with Redis
-- **Rate Limiting**: Redis-based rate limiting (Token Bucket Algorithm)
-- **Load Balancing**: Round-robin load balancing for distributing traffic across backend server
-
-
-### Build Instructions
-
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/multithreaded-proxy-server.git
-cd multithreaded-proxy-server
-
-# Create build directory
-mkdir build && cd build
-
-# Configure the project
-cmake ..
-
-# Compile the server
-make
+### Clone the Repository
+```sh
+ git clone https://github.com/Ervishalpathak7/Reverse-Proxy-Server
+ cd reverse-proxy-server
 ```
 
-### Running the Server
-
-```bash
-# Execute the proxy server
-./server
+### Run with Docker
+```sh
+docker-compose up --build
 ```
 
-## Usage Scenario
+### Run Locally (Without Docker)
+```sh
+go mod tidy
+go run main.go
+```
 
-The proxy server acts as an intermediary for HTTP requests, efficiently:
+## 🔥 Future Enhancements
+- **TLS Support** for secure HTTPS communication.
+- **Advanced Caching Strategies** for better cache invalidation.
+- **Web-Based Dashboard** for real-time monitoring.
 
-- Forwarding client requests to backend servers
-- Caching responses to minimize network overhead
-- Logging detailed request/response information
-- Enforcing rate limiting to control traffic and ensure fair use of resources
-- Balancing load across backend servers for improved scalability and fault tolerance
+## 📜 License
+This project is licensed under the **MIT License**.
 
-## Roadmap and Improvements
-
-Below are the enhancements planned for future releases to improve the functionality, scalability, and security of the proxy server:
-
-### 1. **SSL/TLS Encryption Support**
-   - **Description**: Implement SSL/TLS encryption to secure communications between clients and the proxy server.
-   - **Benefit**: Provides encryption for data in transit, ensuring privacy and security.
-
-### 2. **Advanced Caching Mechanisms**
-   - **Description**: Integrate more advanced caching mechanisms such as Redis or Memcached for distributed caching.
-   - **Benefit**: Scales caching across multiple servers, improving performance and reducing database load.
-
-### 3. **Distributed Proxy Server**
-   - **Description**: Set up a load-balanced cluster of proxy servers to distribute traffic across multiple instances.
-   - **Benefit**: Ensures high availability, better fault tolerance, and improved scalability.
-
-
-### 6. **Request/Response Compression**
-   - **Description**: Add support for HTTP compression (gzip or Brotli) for responses to reduce bandwidth consumption.
-   - **Benefit**: Speeds up response times and reduces the amount of data transferred.
-
-
-### 8. **HTTP/2 or HTTP/3 Support**
-   - **Description**: Implement support for HTTP/2 or HTTP/3 to optimize network performance through multiplexing and header compression.
-   - **Benefit**: Provides faster and more efficient handling of requests, especially for modern web applications.
-
-### 9. **Failover and Recovery Mechanism**
-   - **Description**: Implement automatic failover mechanisms, including health checks and redundancy.
-   - **Benefit**: Increases reliability by ensuring minimal downtime and automatic recovery in case of failure.
-
-### 10. **Dynamic Configuration Management**
-   - **Description**: Allow dynamic configuration updates (e.g., routes, caching policies) without requiring server restarts.
-   - **Benefit**: Makes the proxy server more flexible and easier to manage in a production environment.
-
-
-### 12. **Traffic Analytics**
-   - **Description**: Integrate traffic analytics to gather data on request/response patterns and usage statistics.
-   - **Benefit**: Helps make data-driven decisions on performance tuning, capacity planning, and optimization.
-
-
-## Contribution
-
-**Contributions are welcome!** 
-
-- Fork the repository
-- Create feature branches
-- Submit pull requests
-- Report issues and suggest improvements
-
-## License
-
-**MIT License**. See the `LICENSE` file for complete details.
-
-## Contact
-
-For questions, suggestions, or collaboration, please open an issue in the GitHub repository.
